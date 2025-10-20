@@ -31,7 +31,16 @@ import datetime
 from pathlib import Path
 
 # --- Pfade/Config ---
-BASE_DIR   = Path(__file__).resolve().parent
+# Pfad zum Verzeichnis, das die Binärdatei/Script enthält.
+# Damit die config.json sowie die www/ und Certs/-Ordner neben einer
+# mit PyInstaller erzeugten EXE gefunden werden, verwenden wir bei
+# "gefrosteren" Builds (sys.frozen) das Verzeichnis der ausführbaren Datei.
+def _determine_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+BASE_DIR   = _determine_base_dir()
 CERTS_DIR  = BASE_DIR / "Certs"
 WWW_DIR    = BASE_DIR / "www"
 CONFIG_PTH = BASE_DIR / "config.json"
