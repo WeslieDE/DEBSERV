@@ -26,25 +26,25 @@ jobs:
 
       - name: Build executable with PyInstaller
         run: |
-          pyinstaller --noconfirm --clean --onefile dev_webserver.py --name debserv-server
+          pyinstaller --noconfirm --clean --onefile dev_webserver.py --name debserv --icon Icon.png
 
       - name: Prepare release package
         shell: pwsh
         run: |
           $packageDir = "release-package"
           New-Item $packageDir -ItemType Directory -Force | Out-Null
-          Copy-Item -Path "dist/debserv-server.exe" -Destination $packageDir -Force
+          Copy-Item -Path "dist/debserv.exe" -Destination $packageDir -Force
           Copy-Item -Path "config.json" -Destination $packageDir -Force
           Copy-Item -Path "Certs" -Destination $packageDir -Recurse -Force
           Copy-Item -Path "www" -Destination $packageDir -Recurse -Force
           $items = Get-ChildItem $packageDir
-          Compress-Archive -Path $items.FullName -DestinationPath "debserv-server.zip" -Force
+          Compress-Archive -Path $items.FullName -DestinationPath "debserv.zip" -Force
 
       - name: Publish release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: build-${{ github.run_number }}
           name: Automated build ${{ github.run_number }}
-          files: debserv-server.zip
+          files: debserv.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
