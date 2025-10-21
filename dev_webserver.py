@@ -276,10 +276,6 @@ def main():
 
     # Hinweis zum Import der Root-CA auf Windows
     ca_path = CERTS_DIR / "rootCA.pem"
-    print(f"\n[INFO] Root-CA: {ca_path}")
-    print("Importiere diese Datei in Windows unter:")
-    print("  'Zertifikate – Lokaler Computer' ➜ 'Vertrauenswürdige Stammzertifizierungsstellen' ➜ 'Zertifikate'")
-    print("  Rechtsklick ➜ Importieren… ➜ rootCA.pem auswählen\n")
 
     t1 = threading.Thread(target=serve_http, args=(default_host,), daemon=True)
     t2 = threading.Thread(target=serve_https, args=(default_ctx, default_host), daemon=True)
@@ -305,3 +301,4 @@ if __name__ == "__main__":
         print(f"[ERROR] {e}")
         print("Tipp: Stelle sicher, dass keine anderen Dienste Port 80/443 belegen und du ausreichende Rechte hast.")
         sys.exit(1)
+
