@@ -28,8 +28,6 @@ import json
 import sys
 import threading
 import datetime
-import subprocess
-import shutil
 from pathlib import Path
 
 # --- Pfade/Config ---
@@ -172,148 +170,6 @@ def ensure_host_cert(hostname: str, ca_key, ca_cert, extra_sans=None):
     print(f"[CERT] Zertifikat erzeugt für {hostname}: {key_pth} / {crt_pth}")
     return str(key_pth), str(crt_pth)
 
-def _fingerprint_sha1_hex(cert):
-    return cert.fingerprint(hashes.SHA1()).hex().upper()
-
-def _format_thumbprint_with_colons(thumbprint: str) -> str:
-    return ":".join(thumbprint[i:i+2] for i in range(0, len(thumbprint), 2))
-
-def _is_root_ca_installed_windows(thumbprint: str) -> bool:
-    ps_script = (
-        "$thumb='{thumb}'; "
-        "if (Get-ChildItem -Path Cert:\\LocalMachine\\Root | "
-        "Where-Object { $_.Thumbprint -eq $thumb }) { exit 0 } else { exit 1 }"
-    ).format(thumb=thumbprint)
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    return result.returncode == 0
-
-def _is_root_ca_installed_linux(thumbprint: str) -> bool:
-    candidate_dirs = [Path("/usr/local/share/ca-certificates"), Path("/etc/ssl/certs")]
-    for directory in candidate_dirs:
-        if not directory.exists():
-            continue
-        for cert_file in directory.iterdir():
-            if not cert_file.is_file():
-                continue
-            try:
-                data = cert_file.read_bytes()
-            except OSError:
-                continue
-            cert = None
-            try:
-                cert = x509.load_pem_x509_certificate(data)
-            except ValueError:
-                try:
-                    cert = x509.load_der_x509_certificate(data)
-                except ValueError:
-                    continue
-            if cert and cert.fingerprint(hashes.SHA1()).hex().upper() == thumbprint:
-                return True
-    return False
-
-def _is_root_ca_installed_macos(thumbprint: str) -> bool:
-    formatted = _format_thumbprint_with_colons(thumbprint)
-    try:
-        result = subprocess.run(
-            ["security", "find-certificate", "-Z", "-a", "/Library/Keychains/System.keychain"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    if result.returncode != 0:
-        return False
-    return formatted in result.stdout
-
-def is_root_ca_installed(ca_cert) -> bool:
-    thumbprint = _fingerprint_sha1_hex(ca_cert)
-    if sys.platform.startswith("win"):
-        return _is_root_ca_installed_windows(thumbprint)
-    if sys.platform == "darwin":
-        return _is_root_ca_installed_macos(thumbprint)
-    return _is_root_ca_installed_linux(thumbprint)
-
-def _install_root_ca_windows(ca_path: Path) -> bool:
-    ps_script = (
-        "Import-Certificate -FilePath \"{path}\" "
-        "-CertStoreLocation Cert:\\LocalMachine\\Root | Out-Null"
-    ).format(path=str(ca_path))
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr.strip())
-        return False
-    return True
-
-def _install_root_ca_linux(ca_cert) -> bool:
-    target_dir = Path("/usr/local/share/ca-certificates")
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_file = target_dir / "dev_local_root_ca.crt"
-        target_file.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
-        update_cmd = shutil.which("update-ca-certificates")
-        if not update_cmd:
-            print("[CA] 'update-ca-certificates' wurde nicht gefunden. Bitte manuell installieren.")
-            return False
-        result = subprocess.run([update_cmd], capture_output=True, text=True, check=False)
-    except OSError as exc:
-        print(f"[CA] Fehler beim Schreiben der Root-CA: {exc}")
-        return False
-    if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr.strip())
-        return False
-    return True
-
-def _install_root_ca_macos(ca_path: Path) -> bool:
-    try:
-        result = subprocess.run(
-            [
-                "security",
-                "add-trusted-cert",
-                "-d",
-                "-r",
-                "trustRoot",
-                "-k",
-                "/Library/Keychains/System.keychain",
-                str(ca_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr.strip())
-        return False
-    return True
-
-def install_root_ca(ca_path: Path, ca_cert) -> bool:
-    if sys.platform.startswith("win"):
-        return _install_root_ca_windows(ca_path)
-    if sys.platform == "darwin":
-        return _install_root_ca_macos(ca_path)
-    return _install_root_ca_linux(ca_cert)
-
 # --- HTTP Handler, der je nach Host das DocumentRoot umbiegt ---
 class VHostHandler(http.server.SimpleHTTPRequestHandler):
     # Kein Logging-Spam
@@ -415,40 +271,11 @@ def main():
     hosts, extra_sans_map = load_config()
     ensure_dirs(hosts)
     ca_key, ca_cert = load_or_create_ca()
-    ca_path = CERTS_DIR / "rootCA.pem"
-
-    ca_installed = False
-    try:
-        ca_installed = is_root_ca_installed(ca_cert)
-    except Exception as exc:
-        print(f"[CA] Konnte Installationsstatus nicht prüfen: {exc}")
-    else:
-        if ca_installed:
-            print("[CA] Root-CA ist bereits im System installiert.")
-        else:
-            print("[CA] Root-CA ist im System noch nicht installiert.")
-            if sys.stdin.isatty():
-                answer = input("[CA] Automatisch installieren? [Y/N]: ").strip().lower()
-                if answer in {"y", "yes", "j", "ja"}:
-                    if install_root_ca(ca_path, ca_cert):
-                        try:
-                            ca_installed = is_root_ca_installed(ca_cert)
-                        except Exception:
-                            ca_installed = False
-                        if ca_installed:
-                            print("[CA] Root-CA wurde erfolgreich installiert.")
-                        else:
-                            print("[CA] Installation durchgeführt, konnte Root-CA jedoch nicht verifizieren.")
-                    else:
-                        print("[CA] Automatische Installation fehlgeschlagen. Bitte manuell installieren.")
-                else:
-                    print("[CA] Automatische Installation übersprungen.")
-            else:
-                print("[CA] Kein interaktives Terminal – automatische Installation wird übersprungen.")
 
     default_ctx, per_host_ctx, default_host = build_ssl_contexts(hosts, ca_key, ca_cert, extra_sans_map)
 
     # Hinweis zum Import der Root-CA auf Windows
+    ca_path = CERTS_DIR / "rootCA.pem"
 
     t1 = threading.Thread(target=serve_http, args=(default_host,), daemon=True)
     t2 = threading.Thread(target=serve_https, args=(default_ctx, default_host), daemon=True)
